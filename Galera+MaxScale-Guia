@@ -1,0 +1,75 @@
+1. Instalar los Repositorios de Galera (de MariaDB)
+2. Instalar herramientas varias: 
+	- rsync (utilitario de linux para transmision de datos incrementales)
+	- nmap (herramienta de linux para el monitoreo de los puertos)
+	- lsof (herramienta de linux para el monitoreo de los archivos abiertos que un proceso se encunetra usando)
+	- perl-DBI (es una API escrita en Perl que sirve como interfaz entre la base de datos y la aplicacion)
+	- nc (netcat es una herramienta de analisis de red)
+3. Instalar MariaDB y mas herramientas para el funcionamiento:
+	- MariaDB-compat 
+	- galera 
+	- socat  (es un utilitario de linux que establece un stream de datos entre dos puntos)
+	- jemalloc (Es una implementacion del malloc, memory allocator)
+4. Habilitar e iniciar el Daemond de MariaDB
+5. Habilitar el Firewall de Linux y abrir los puertos:
+	- 3306 (Puerto de MariaDB)
+	- 4567 (Puerto del trafico de Galera, tanto TCP como UDP por lo tanto hay que abrir ambos)
+	- 4444 (Puerto usado para el SST, State Snapshot Transfer)
+	- 4568 (Puerto usado para el IST, Incremental State Transfer)
+6. Configurar el server.cnf con la configuracion de galera y el my.cnf (ambos son importantes)
+7. Reiniciar el servicio de MariaDB
+8. Iniciar el cluster (solo hacer en el primer nodo)
+
+Nota: estuve casi 2 horas tratando de iniciar el cluster pero no podia. El error rondaba en torno a:
+ [ERROR] WSREP: failed to open gcomm backend connection: 110: failed to reach primary view: 110 (Connection timed out)
+			    at gcomm/src/pc.cpp:connect():162
+ [ERROR] WSREP: gcs/src/gcs_core.cpp:gcs_core_open():208: Failed to open backend connection: -110 (Connection timed out) 
+ [ERROR] WSREP: gcs/src/gcs.cpp:gcs_open():1379: Failed to open channel 'cluster' at 'gcomm://172.16.0.102,172.16.0.112': -110 (Connection timed out)
+ [ERROR] WSREP: gcs connect failed: Connection timed out
+ [ERROR] WSREP: wsrep::connect(gcomm://172.16.0.102,172.16.0.112) failed: 7
+ [ERROR] Aborting
+
+ La solucion que encontre es muy tonta pero mientras mysqld no este corriendo hay que usar el comando galera_new_cluster, lo que seria algo asi:
+ 	systemctl stop mariadb
+ 	galera_new_cluster
+ 	systemctl start mariadb
+
+ 9. Iniciar los otros nodos
+
+ Nota: Ojo! si se configura algun cnf que se encuentra dentro del my.cnf.d pero no hay un my.cnf, no se tomaran las configuraciones dentro del directorio. Es fundamental tener ambos.
+
+ 10. Probar
+
+ Nota: en si no es dificil tener un cluster andando, probablemente en 30 minutos se lo puede tener funcionando. El problemas es que puede pasar que por distraido o despistado se pierda tiempo y se torne complejo o dificultoso armarlo.
+
+Nota: si todos los nodos se caen (ejemplo se apagan todos a la vez) para reiniciar el cluster hay que efitar el /var/lib/mysql/grastate.dat y en la variable safe_to_bootstrap el valor debe ser uno (1) y de ahi nos dejara hacer galera_new_cluster y luego systemctl start mariadb
+
+11. Instalar MaxScale
+
+12. Configurar.
+
+Nota: Estas son las distintas partes del archivo de configuracion (/etc/maxscale.cnf):
+	- Global Settings: los valores globales o generales para  Maxscale, por defecto vienen la cantidad de Threads que MaxScale va a usar
+	- Servers: aqui pondremos nuestros servidores (si se esta trabajando con un cluster, pondremos cada uno de los nodos del cluster)
+	- Monitors: un monitor es un plugin que verifica el estado de los servidores:
+		- MariaDB Monitor: Monitorea la replicacion simple de MariaDB (Antes se llamaba MySQL Monitor)
+		- Galera Monitor: Monitroea a cada uno de los nodos del Cluster de Galera y nos permite ver cuales se encuentran sincronizando
+		- NDB Monitor: Monitorea el cluster de MySQL
+		- Multi-Master Monitor: Monitorea la replicacion Multi-Master o Multi-Source
+	- Services: tambien llamados routers cumplen dos funciones. La primera es cumplir la funcion de un servicio principal y la otra es definir los servicios administrativos. Los servicios son:
+		- Binlogrouter: sirve como un punto intermedio entre el master y los slaves, entonces los slaves en vez de conectarse al master se conectan al Proxy y si replican del mismo. Si el master se cae, los slaves siguen replicando el master. En el fonodo esta recuperando los binlogs del master.
+		- CLI: Es una interfaz de linea de comando para monitorear maxscale con maxadmin (se puede monitorear en forma remota)
+		- Debug CLI: es una linea de comandos basada en sentencias que en vez de dirigir las declaraciones a una fuente de datos externa, lo hace internamente. Maneja conmandos de depuracciond de MaxScale.
+		- Readconnroute: proporciona un balanceo de carga simple y lijera. Tambien puede configurarse para que balance segun las conexiones, es decir para que alijere los servidores segun su conexion.
+		- ReadwriteSplit: balancea las cargas de modo tal que las cosnultas de lectura vallan a un nodo (o varios) y las de escritura vallan para otro nodo (u otros varios).
+		- SchemaRouter: Permite crear un solo servidor logico que al cliente se vera de ese modo (un solo servidor el cual sera el proxy) pero las bases de datos de dicho "servidor logico" estaran esparcidas en distintos nodos.
+	- Listeneres: Estos son plugins que implementan el protocolo actual que escucha las conexiones de clientes.
+
+Nota: Guarda con configurar mal los servers (la ip o lo que sea) porque sino va a mostrar en list servers que estan Down!
+NOTA: Para la configuracion tipica de 3 nodos de un Cluster (Read, Write, Failover) se usa el splitter y tener en cuenta:
+	- El MASTER no recibe lecturas es de SOLO ESCRITURA (es decir que es el nodo Write) (OJO: tambien van a haber lecturas si es que las mismas estan dentro de una transaccion)
+	- Los SLAVES tienen la carga de SOLO LECTURA, pero si pueden derivarse cargas de llamadas a funciones
+	- El ruteo lo hace solo, no hay forma de indicar cual es el nodo de lectura, cual de escritura y cual de fail over
+
+13. Monitorear
+14. Probar

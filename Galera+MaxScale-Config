@@ -1,0 +1,183 @@
+******************* Galera Cluster ******************* 
+
+[Todos-los-nodos]
+
+vim /etc/yum.repos.d/galera.repo
+xxx|
+# MariaDB 10.2 CentOS repository list - created 2018-04-10 12:56 UTC
+# http://downloads.mariadb.org/mariadb/repositories/
+[mariadb]
+name = MariaDB
+baseurl = http://yum.mariadb.org/10.2/centos7-amd64
+gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck=1
+
+yum install -y rsync nmap lsof perl-DBI nc
+yum install -y MariaDB galera socat jemalloc
+systemctl enable mariadb && systemctl start mariadb
+
+systemctl start firewalld
+firewall-cmd --permanent --add-port=3306/tcp
+firewall-cmd --permanent --add-port=4567/udp
+firewall-cmd --permanent --add-port=4444/tcp
+firewall-cmd --permanent --add-port=4568/tcp
+firewall-cmd --reload
+
+
+vim /etc/my.cnf.d/server.cnf
+[galera]
+wsrep_on=ON
+wsrep_provider=/usr/lib64/galera/libgalera_smm.so
+wsrep_cluster_address='gcomm://192.168.12.144, 192.168.12.151, 192.168.12.152'
+wsrep_cluster_name='epilab'
+wsrep_node_address='ip add'
+wsrep_node_name='node_name'
+wsrep_sst_method=rsync
+binlog_format=row
+default_storage_engine=InnoDB
+innodb_autoinc_lock_mode=2
+bind_address=0.0.0.0
+
+vim /etc/my.cnf
+[mysqld]xx
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+
+server_id=3
+
+log-bin=/var/lib/mysql/master-nodo3-bin
+binlog_format= mixed
+
+log_slave_updates=1
+
+# Disabling symbolic links is recomemended to prevent assorted security risks
+symbolic-links=0
+# Setting user and group ara ifnored when systemd is used.
+# If you need to run mysqld under a differrent user or group,
+# customize your systemd unit file fore mariadb according to the
+# instructions in http://feboraproject.org/wiki/Systemd
+
+[mysqld_safe]
+log-error=/var/log/mariadb/mariadb.log
+pid-file=/var/lib/mysql/mariadb.pid
+#
+# include all files from the config directory
+#
+!includedir /etc/my.cnf.d
+
+
+systemctl restart mariadb
+
+- Solo en el nodo 1:
+
+systemctl stop mariadb
+galera_new_cluster
+systemctl start mariadb
+
+- Resto de los nodos :
+
+systemctl restart mariadb
+
+
+******************* Max-Scale ******************* 
+
+[Max-Scale]
+
+yum install https://downloads.mariadb.com/MaxScale/2.2.2/rhel/7/x86_64/maxscale-2.2.2-1.rhel.7.x86_64.rpm
+
+# En cada nodo del cluster:
+
+CREATE USER *.* TO 'maxscale'@'%';
+GRANT SELECT, INSERT, SHOW DATABASES ON *.* TO 'maxscale'@'%';
+# si la replicacion va bien simplemente hay que crearlo una vez y luego hacer el flush en toddos los nodos
+FLUSH PRIVILEGES;
+
+vim /etc/maxscale.cnf
+
+[maxscale]
+threads=auto
+
+# Server
+
+[node1]
+type=server
+address=192.168.12.144
+port=3306
+protocol=MariaDBBackend
+
+[node2]
+type=server
+address=192.168.12.151
+port=3306
+protocol=MariaDBBackend
+
+[node3]
+type=server
+address=192.168.12.152
+port=3306
+protocol=MariaDBBackend
+
+# Monitors
+
+[Galera-Monitor]
+type=monitor
+module=galeramon
+servers=node1,node2,node3
+user=maxscale
+passwd=
+monitor_interval=1000
+
+# Services
+
+[Splitter-Service]
+type=service
+router=readwritesplit
+servers=node1,node2,node3
+user=maxscale
+passwd=
+
+[MaxAdmin-Service]
+type=service
+router=cli
+
+# Listener
+
+[Splitter-Listener]
+type=listener
+service=Splitter-Service
+protocol=MySQLClient
+port=3306
+
+[MaxAdmin-Listener]
+type=listener
+service=MaxAdmin-Service
+protocol=maxscaled
+socket=default
+                      
+
+ps -ef | grep maxscale
+
+# Si se produce algun error usando el comando anterior, el error log se encuentra en /var/log/maxscale 
+
+vim /lib/systemd/system/maxscale.service 
+
+ExecStartPre = / usr / bin / install -d / var / run / maxscale -o maxscale -g maxscale 
+#ExecStart = / usr / bin / maxscale --user = maxscale 
+ExecStart = / usr / bin / maxscale --user = root 
+
+systemctl restart maxscale
+# Para monitorear el estado del Maxscale, no usaremos Mariadb (mysql -r) sino la herramienta de administracion de maxscale (maxadmin)
+
+maxadmin
+
+> list servers
+> list services
+> list listeners
+> show service "ServiceName"
+> show monitor "Galera-Monitor"
+
+# Para conectarse al cluster por medio de MaxScale:
+
+mysql -umaxscale -p --socket=/tmp/galeramaster.sock 
+
+> SHOW GLOBAL STATUS LIKE'wsrep_cluster_size%';

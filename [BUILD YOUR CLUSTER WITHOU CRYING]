@@ -1,0 +1,61 @@
+[BUILD YOUR CLUSTER WITHOU CRYING]
+
+yum update
+
+vim /etc/yum.repos.d/galera.cnf
+
+# MariaDB 10.2 CentOS repository list - created 2018-04-24 14:35 UTC
+# http://downloads.mariadb.org/mariadb/repositories/
+[mariadb]
+name = MariaDB
+baseurl = http://yum.mariadb.org/10.2/centos7-ppc64
+gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck=1
+
+yum install -y rsync nmap lsof perl-DBI nc
+yum install -y MariaDB galera socat jemalloc
+
+systemctl enable mariadb && systemctl start mariadb
+
+mysql_secure_installation
+
+systemctl start firewalld
+firewall-cmd --permanent --add-port=3306/tcp
+firewall-cmd --permanent --add-port=4567/udp
+firewall-cmd --permanent --add-port=4567/tcp
+firewall-cmd --permanent --add-port=4444/tcp
+firewall-cmd --permanent --add-port=4568/tcp
+firewall-cmd --reload
+
+vim /etc/my.cnf
+
+[mysqld]
+server-id=1
+
+!includedir /etc/my.cnf.d
+
+vim /etc/my.cnf.d/server.cnf
+
+[galera]
+
+wsrep_on=ON
+wsrep_provider=/usr/lib64/galera/libgalera_smm.so
+wsrep_cluster_address='gcomm://192.168.12.220, 192.168.12.221, 192.168.12.223'
+wsrep_cluster_name='cluster_demo'
+wsrep_node_address=''
+wsrep_node_name=''
+wsrep_sst_method=rsync
+
+binlog_format=row
+default_storage_engine=InnoDB
+innodb_autoinc_lock_mode=2
+bind_address=0.0.0.0
+
+
+
+systemctl stop mariadb
+
+galera_new_cluster
+
+systemctl start mariadb
+

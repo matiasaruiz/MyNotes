@@ -1,0 +1,86 @@
+root@DM-MATIASR:/home/matiasr# mysql -r -p
+MariaDB [(none)]> CREATE DATABASE LabAnalitycs;
+MariaDB [(none)]> USE LabAnalitycs;
+
+root@DM-MATIASR:/home/matiasr# cd /Documentos/MariaDB/LAB/Samples/AX 
+# Direccion de mis muestras para hacer los inserts de los datos
+
+# Para cargar los datos de un CSV, MariaDB Recomienda usar CONNECT, pero tambien tiene un motor llamado CSV.
+# Vamos a hacer la prueba a ver cual de los dos funciona mejor.
+
+# Leyendo la documentacion, descubri que enrealidad, CSV no es para cargar datos desde un CSV, mas bien
+# es para que los datos que tenemos en nuestra base (o que querramos almacenar) se guarden (a nivel fisico),
+# en archivos CSV. Cambia la cosa. Esto implica que nuestros datos no van a poder ser indexados y que no van
+# a haber Nullos en nuestras filas. Tampoco podran ser particionadas estas tablas. Tampoco sera Transaccional.
+# No parece ser util verdad? Sin embargo, esto nos va a permitir tomar datos de algun Dispositvo IoT o generador
+# de datos (como algun log web, etc) y usarlo como deposito de todos estos datos para luego ser procesados, mismo
+# por MariaDB, o bien utilizando Hadoop, o cualquier solucion para Data Analitycs. Utilizar este motor, tambien nos
+# permitira tener la posibilidad de transladar los datos (de tecnologia en tecnologia) mas facilmente.
+# 
+# En este sentido, la cuestion no es si usar Connect o CSV, mas bien que ambos tiene funcionalidades distintas y por ende
+# sirven para cosas distintas. Por mas que la linea sea estrecha, es importante hacer la direncia.
+#
+# Basta de chachara y manos a la obra!
+#
+# Analicemos primero una linea del .csv (negocio-productos.csv):
+0000010,"CEMENTO LOMA NEGRA BOLSA x 50 KG.",1011,21.00,236.05
+# Para hacerla facil vamos a definirla en:
+#	INT(10)
+#	TEXT
+#	INT(10)
+#	DOUBLE
+#   DOUBLE
+#   Como estamos trabajando con un CSV recordemos que todos los campos deben ser NOT NULL y tampoco habra una PK.
+#   Asique creemos nuestra Sentencia de creacion de la tabla (si vieja, todavia no insertamos ni un dato, 
+#   esto va a ser largo jaja):
+
+CREATE TABLE negocioProductos(a INT NOT NULL, b TEXT NOT NULL, c INT NOT NULL, d DOUBLE NOT NULL, e DOUBLE NOT NULL) ENGINE=CONNECT TABLE_TYPE=CSV;
+
+# Ejecutemos nomas. 
+# Nota: estuve casi 30 minutos tratando de correr el statement y no me corria :'( hasta que me di cuenta de que no tenia
+# instalado el storage engine :facepalm:. Asique primero hay que instalarlo y despues si corremos nuestro statement.
+# Aca se armo alto bardo. Cuando fui a: /usr/lib/mysql/plugin, a buscar el plugin (instalable), no estaba :| :
+root@DM-MATIASR:/usr/lib/mysql/plugin# ls
+auth_pam.so             handlersocket.so        semisync_slave.so
+auth_socket.so          ha_sphinx.so            server_audit.so
+file_key_management.so  locales.so              simple_password_check.so
+ha_archive.so           metadata_lock_info.so   sql_errlog.so
+ha_blackhole.so         query_cache_info.so     wsrep_info.so
+ha_federated.so         query_response_time.so
+ha_federatedx.so        semisync_master.so
+
+# estamos buscando el archivo: ha_connect.[so|dll]. No se encuntra aca! oshhhhh porque la vida no es tan simple? jaja
+# Troubleshooting mode:
+#
+# 	1. Probe lo que dicen varios:
+		sudo apt-get install mariadb-connect-engine-10.0
+# 	   no anda
+# 	2. Todo el mundo dice que probablemente sea porque estoy usando XAMPP. NO estoy usando Xampp. Descartado
+#	3. Me baje el Source a cara de RE perro. Voy a buscar el archivo de ha_connect dentro del source. Ya fue.
+#	   Lo baje y lo abri mas rapido de reflexionar en lo que estaba haciendo. El source no tiene codigo compilado
+#	   :ultrafacepalm:, dentro de la carpeta /storage/connect, solamente estan todos los archivos del proyecto (el
+#		codigo y los headers sin compilar en c++). Habian 2 ha_connect pero eran un .cpp y .h :facepalm:. NO sirve.
+#		Pero descubri que MariaDB esta hecho con solaris. Dato curioso y al pedo.
+#   4. Algunos dicen que tengo que instalar la libreria libodbc1. Tengo la version mas reciente :monitotapandoselosojos:
+#   5. Probe la vieja confiable, a ver si daba resultado: descargar el archivo de internet, a cara de perro. Despues 
+#      lo movi a /usr/lib/mysql/plugin y reinicie mariadb (systemctl restart mariadb). Paso esto:
+			MariaDB [(none)]> INSTALL SONAME 'ha_connect'; 
+			ERROR 1126 (HY000): Cant open shared library '/usr/lib/mysql/plugin/ha_connect.so' (errno: 2, undefined symbol: _ZN6String4copyEPKcjPK15charset_info_st)
+# 		Probemos con otro archivo que encontre en internet. Paso lo mismo pero con otro hash:
+			MariaDB [(none)]> INSTALL SONAME 'ha_connect';
+			ERROR 1126 (HY000): Cant open shared library '/usr/lib/mysql/plugin/ha_connect.so' (errno: 2, undefined symbol: _ZN6String4copyEPKcjPK15charset_info_st)
+#		No sirvio, borramos los archivos.
+#
+#	Ninguno de los metodos vistos anteriormente funciono. De hecho, a decir verdad, no solucione el problema. Pero leyendo el libro "MariaDB Cookbook" (libraso
+#   por cierto) por Daniel Bartholomew (maestro de la vida), entendi como funciona CONNECT (PD: gracias documentacion de MariaDB). CONNECT es un adaptador
+#   lo que hace (para que lo entiendan) es crear la interfaz entre las fuentes de datos que querramos y mariadb. En otras palabras, toma una tabla de por ejemplo
+#   Oracle y la lee en formato de MariaDB, Esto quiere decir que los datos (en mi caso, de mi csv) no son almacenados en mi disco por MariaDB, mas bien,
+#   MariaDB va a buscar los datos a Esa fuente (a mi csv) pero los interpreta como MariaDB.
+#   Entonces que necesito? Bueno, hacer simplemente un Bulk Insert de mis datos a una tabla cualquiera. Por cuestiones de Marketing, vamos a usar INNODB,
+#   Ya que "INNODB ES MARIADB" (una estupidez que mas adelante trataremos). Mejor... no, vamos a usar un Engine mas apropiado (ya que los engines no son
+# 	Mas que herramientas que se van a ajustar mejor a nuestras necesidades) y vamos a usar ColumnarStore;
+
+CREATE TABLE negocioProductos(a INT NOT NULL, b TEXT NOT NULL, c INT NOT NULL, d DOUBLE NOT NULL, e DOUBLE NOT NULL) ENGINE=columnstore;
+
+#   Voy a pasar un poco de los limites de los tipos de datos y la performance y voy saltar directamente a cargar los datos. Pero primero
+#   hay que instalar nuestro motor :/
