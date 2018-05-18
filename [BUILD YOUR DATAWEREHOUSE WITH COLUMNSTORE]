@@ -1,0 +1,231 @@
+root@DM-MATIASR:/home/matiasr# mysql -r -p
+MariaDB [(none)]> CREATE DATABASE LabAnalitycs;
+MariaDB [(none)]> USE LabAnalitycs;
+
+root@DM-MATIASR:/home/matiasr# cd /Documentos/MariaDB/LAB/Samples/AX 
+# Direccion de mis muestras (csv) para hacer los inserts de los datos
+
+# Para cargar los datos de un CSV, MariaDB Recomienda usar CONNECT, pero tambien tiene un motor llamado CSV.
+# Vamos a hacer la prueba a ver cual de los dos funciona mejor.
+
+# Leyendo la documentacion, descubri que enrealidad, CSV no es para cargar datos desde un CSV, mas bien
+# es para que los datos que tenemos en nuestra base (o que querramos almacenar) se guarden (a nivel fisico),
+# en archivos CSV (en vez de un .MYD si usaramos MyISAM por ejemplo=. Cambia la cosa. Esto implica que nuestros
+# datos no van a poder ser indexados y que no van a haber Nullos en nuestras filas. 
+# Tampoco podran ser particionadas estas tablas. Tampoco sera Transaccional.
+# No parece ser util verdad? Sin embargo, esto nos va a permitir tomar datos de algun Dispositvo IoT o generador
+# de datos (como algun log web, etc) y usarlo como deposito de todos estos datos para luego ser procesados, mismo
+# por MariaDB, o bien utilizando Hadoop, o cualquier solucion para Data Analitycs. Utilizar este motor, tambien nos
+# permitira tener la posibilidad de transladar los datos (de tecnologia en tecnologia) mas facilmente.
+# 
+# En este sentido, la cuestion no es si usar Connect o CSV, mas bien que ambos tiene funcionalidades distintas y por ende
+# sirven para cosas distintas. Por mas que la linea sea estrecha, es importante hacer la diferencia.
+#
+# Basta de chachara y manos a la obra!
+#
+# Analicemos primero una linea del .csv (negocio-productos.csv):
+0000010,"CEMENTO LOMA NEGRA BOLSA x 50 KG.",1011,21.00,236.05
+# Para hacerla facil vamos a definirla en:
+#	INT(10)
+#	TEXT
+#	INT(10)
+#	DOUBLE
+#   DOUBLE
+#   Como estamos trabajando con un CSV recordemos que todos los campos deben ser NOT NULL y tampoco habra una PK.
+#   Asique creemos nuestra Sentencia de creacion de la tabla (si vieja, todavia no insertamos ni un dato, 
+#   esto va a ser largo jaja):
+
+CREATE TABLE negocioProductos(a INT NOT NULL, b TEXT NOT NULL, c INT NOT NULL, d DOUBLE NOT NULL, e DOUBLE NOT NULL) ENGINE=CONNECT TABLE_TYPE=CSV;
+
+# Ejecutemos nomas. 
+# Nota: estuve casi 30 minutos tratando de correr el statement y no me corria :'( hasta que me di cuenta de que no tenia
+# instalado el storage engine :facepalm:. Asique primero hay que instalarlo y despues si corremos nuestro statement.
+# Aca se armo alto bardo. Cuando fui a: /usr/lib/mysql/plugin, a buscar el plugin (instalable .so), no estaba :| :
+
+root@DM-MATIASR:/usr/lib/mysql/plugin# ls
+auth_pam.so             handlersocket.so        semisync_slave.so
+auth_socket.so          ha_sphinx.so            server_audit.so
+file_key_management.so  locales.so              simple_password_check.so
+ha_archive.so           metadata_lock_info.so   sql_errlog.so
+ha_blackhole.so         query_cache_info.so     wsrep_info.so
+ha_federated.so         query_response_time.so
+ha_federatedx.so        semisync_master.so
+
+# estamos buscando el archivo: ha_connect.so. No se encuntra aca! oshhhhh porque la vida no es tan simple? jaja
+# Troubleshooting mode:
+#
+# 	1. Probe lo que dicen varios:
+		sudo apt-get install mariadb-connect-engine-10.0
+# 	   no anda (tambien actualice mi repo y nada che)
+# 	2. Todo el mundo dice que probablemente sea porque estoy usando XAMPP. NO estoy usando Xampp. Descartado
+#	3. Me baje el Source a cara de RE perro. Voy a buscar el archivo de ha_connect dentro del source. Ya fue.
+#	   Lo baje y lo abri mas rapido de reflexionar en lo que estaba haciendo. El source no tiene codigo compilado
+#	   :ultrafacepalm:, dentro de la carpeta /storage/connect, solamente estan todos los archivos del proyecto (el
+#		codigo y los headers sin compilar en c++). Habian 2 ha_connect pero eran un .cpp y .h :facepalm:. NO sirve.
+#		Pero descubri que MariaDB esta hecho con solaris. Dato curioso y al pedo.
+#   4. Algunos dicen que tengo que instalar la libreria libodbc1. Tengo la version mas reciente :monitotapandoselosojos:
+#   5. Probe la vieja confiable, a ver si daba resultado: descargar el archivo de internet, a cara de perro. Despues 
+#      lo movi a /usr/lib/mysql/plugin y reinicie mariadb (systemctl restart mariadb). Paso esto:
+			MariaDB [(none)]> INSTALL SONAME 'ha_connect'; 
+			ERROR 1126 (HY000): Cant open shared library '/usr/lib/mysql/plugin/ha_connect.so' (errno: 2, undefined symbol: _ZN6String4copyEPKcjPK15charset_info_st)
+# 		Probemos con otro archivo que encontre en internet:
+			MariaDB [(none)]> INSTALL SONAME 'ha_connect';
+			ERROR 1126 (HY000): Cant open shared library '/usr/lib/mysql/plugin/ha_connect.so' (errno: 2, undefined symbol: _ZN6String4copyEPKcjPK15charset_info_st)
+#		No sirvio, borramos los archivos.
+#
+#	Ninguno de los metodos vistos anteriormente funciono. De hecho, a decir verdad, no solucione el problema. Pero leyendo el libro "MariaDB Cookbook" (libraso
+#   por cierto) por Daniel Bartholomew (maestro de la vida), entendi como funciona CONNECT (PD: gracias documentacion de MariaDB). CONNECT es un adaptador.
+#   Lo que hace (para que lo entiendan) es crear la interfaz entre las fuentes de datos que querramos y mariadb. En otras palabras, toma una tabla de por ejemplo
+#   Oracle y la lee en formato de MariaDB, Esto quiere decir que los datos (en mi caso, de mi csv) no son almacenados en mi disco por MariaDB, mas bien,
+#   MariaDB va a buscar los datos a Esa fuente (a mi csv) pero los interpreta como MariaDB.
+#   Entonces que necesito? Bueno, hacer simplemente un Bulk Insert de mis datos a una tabla cualquiera. Cuando empece con estas pruebas me dije a mi mismo:
+#	"Algo me dice que voy a terminar haciendo un bulk insrt como hice la otra vuelta que necesitaba tirar los datos de un csv a una tabla InnoDB"
+#   Por cuestiones de Marketing, vamos a usar INNODB, Ya que "INNODB ES MARIADB" (una estupidez que mas adelante trataremos). 
+#   Mejor... no, vamos a usar un Engine mas apropiado (ya que los engines no son Mas que herramientas que se van a ajustar mejor a nuestras necesidades) 
+#   y vamos a usar ColumnStore;
+
+CREATE TABLE negocioProductos(a INT NOT NULL, b TEXT NOT NULL, c INT NOT NULL, d DOUBLE NOT NULL, e DOUBLE NOT NULL) ENGINE=columnstore;
+
+#   Voy a pasar un poco de los limites de los tipos de datos y la performance y voy saltar directamente a cargar los datos. Pero primero
+#   hay que instalar nuestro motor :/
+# 	Ok hay que hacer alto vardo pero aca vamos:
+#	(vamos a laburar sobre una vm con CentOS a partir de ahora):
+#	1. Descargamos nuestro CS desde este link:
+#		https://mariadb.com/downloads/mariadb-ax
+#	(Si sos vagoneta y tenes Centos7 toma: https://mariadb.com/download_file/columnstore/centos/1.1.4/a8477a35e56ccf77e4f29db13f42345d)
+#   Una vez descargado, en mi caso lo tengo que pasar a la VM, sique:
+
+	matiasr@DM-MATIASR:~/Descargas$ scp mariadb-columnstore-1.1.4-1-centos7.x86_64.rpm.tar.gz root@192.168.12.223:/home/student
+	The authenticity of host '192.168.12.223 (192.168.12.223)' can't be established.
+	ECDSA key fingerprint is a Hash man are loco niagancholemuestromikey.
+	Are you sure you want to continue connecting (yes/no)? yes
+	Warning: Permanently added '192.168.12.223' (ECDSA) to the list of known hosts.
+	root@192.168.12.223's password: lapass
+	mariadb-columnstore-1.1.4-1-centos7 100%  242MB  40.4MB/s   00:06    
+	matiasr@DM-MATIASR:~/Descargas$ 
+	[root@columnstore student]# ls
+	mariadb-columnstore-1.1.4-1-centos7.x86_64.rpm.tar.gz
+#	ATR
+#	NOTA! te recomiendo usar esta vm bajala (esta en virtual box) e instala de una siguiendo estos pasos, te vas a ahorara MUCHOS problemas. Hacela
+#	Facil, no seas gil. https://downloads.mariadb.com/training/courses/mariadb-developers/Virtual-Machine/CentOS7_201.tar.gz
+#	Ahora vamos a instalarlo:
+
+	[root@columnstore student]# tar -xvf mariadb-columnstore-1.1.4-1-centos7.x86_64.rpm.tar.gz 
+	[root@columnstore student]# yum -y localinstall *.rpm # instalamos todo a cara de perro. A LA GO MA
+
+#	Vamos a configurarlo (el tipico mysql_secure_installation):
+
+	[root@columnstore student]# /usr/local/mariadb/columnstore/bin/postConfigure
+
+#	ahora nos  va a preguntar si vamos a queremos instalar el modo single (un solo servidor) o multi (haciendo sharding), como solo vamos
+#	a hacer una demo o lab simple, vamos a darle single.
+
+	Enter System Name (columnstore-1) > (Enter)
+	Select the type of Data Storage [1=internal, 2=external] (1) > 1
+	Enter System Name (columnstore-1) > (Enter)
+	Enter the list (Nx,Ny,Nz) or range (Nx-Nz) of DBRoot IDs assigned to module 'pm1' (1) > 1
+
+# 	Nota: si  nos dice algo del puerto 3306, lo que tenemos que hacer es matar el proceso de mysqld que se encuntra corriendo y luego:	
+
+	Enter port number > (Enter)
+
+#	por ultimo:
+
+	[root@columnstore student]# . /usr/local/mariadb/columnstore/bin/columnstoreAlias
+	[root@columnstore student]# mcsadmin getSystemStatus
+
+#	mcsadmin: es la consola que nos permiten monitorear, configurar y administrar el sistema MariaDB Columnstore y los servidores.
+#	mcsmysql: es la consola para realizar las tareas de DML y DLL (como mysql en MariaDB)
+
+#	Si hiciste todo lo que dije hasta ahora (sobre todo con la vm nueva) tiene que andar.
+#	Ahora yo me voy a pasar mis archivos csv y demases a mi servidor columnstore por medio de scp.
+# 	por las dudas:
+
+	matiasr@DM-MATIASR: scp negocio-productos.csv root@192.168.12.118:/root/LAB/samples
+
+#	Vamos a jugar un poco:
+	[root@column samples]# mcsmysql
+	Welcome to the MariaDB monitor.  Commands end with ; or \g.
+	Your MariaDB connection id is 10
+	Server version: 10.2.14-MariaDB-log Columnstore 1.1.4-1
+
+	Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.
+
+	Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+	MariaDB [(none)]> show databases;
+	+---------------------+
+	| Database            |
+	+---------------------+
+	| calpontsys          |
+	| columnstore_info    |
+	| infinidb_querystats |
+	| infinidb_vtable     |
+	| information_schema  |
+	| mysql               |
+	| performance_schema  |
+	| test                |
+	+---------------------+
+	8 rows in set (0.02 sec)
+
+	MariaDB [(none)]> CREATE DATABASE Lab;
+	Query OK, 1 row affected (0.00 sec)
+	MariaDB [(none)]> use Lab;
+	Database changed
+	MariaDB [Lab]> CREATE TABLE negocioProductos(a INT NOT NULL, b VARCHAR(80) NOT NULL, c INT NOT NULL, d DOUBLE NOT NULL, e DOUBLE NOT NULL) engine=columnstore;
+	Query OK, 0 rows affected (1.41 sec)
+
+
+	Query OK, 0 rows affected (4.63 sec)
+
+#	Nota! Piensen que ColumnStore genera una capa de abstraccion interna entre quien almacena los datos (y su tratamiento fisico) y el manejo de los datos, como vemos
+#	en la imagne de abajo, por eso es que tardo 4.63 seg en generar la tabla. Recordemos que esta genreando una Jerarquias importante. Esto es malo? no, solamente
+#	se esta preparando para cuando lleguen todos los datos juntos, atajarlos de la mejor manera posible.
+
+	https://mariadb.com/sites/default/files/inline-images/columnstore-architecture_0.png
+
+#   
+#	Una vez creada nuestra estructura, vamos a hacer el IMPORT! al fin vieja! Podemos hacerlo con:
+
+	MariaDB [Lab]> LOAD DATA LOCAL INFILE "negocio-productos.csv" INTO TABLE Lab.negocioProductos FIELDS TERMINATED BY ',' ENCLOSED BY '\"' LINES TERMINATED BY '\n';
+	Query OK, 14888 rows affected, 15120 warnings (3.26 sec)
+	Records: 14888  Deleted: 0  Skipped: 0  Warnings: 15120
+
+
+#	O bien podemos usar cpimport. cpimport es una herramienta de carga masiva de alta velocidad que importa datos en tablas ColumnStore de manera rápida y eficiente.
+#	Te toma como entrada cualquier cosa que sea un texto plano y que tenga un delimitador por column (puede ser , * | lo que vega). El por defecto es | (pipe)
+#	pero le podes decir que te use lo que venga. Hay que tener en cuenta que los tipos de datos de nuestra tabla columnstore deben ser las mismas en las que
+#	se encuentran  nuestros datos en el archivo de texto plano.
+#
+#	Ahora si:
+	[root@column samples]# cpimport Lab negocioProductos negocio-productos.csv -m 1 -q 14888
+
+# 	Y al FIN:
+
+	[root@column samples]# mcsmysql
+	MariaDB [(none)]> use lab
+	Database changed
+	MariaDB [lab]> select * from negocioProductos;
+	+---------+-------------------------------------------------------+------+------+-----------+
+	| a       | b                                                     | c    | d    | e         |
+	+---------+-------------------------------------------------------+------+------+-----------+
+	| 7095047 | "BAGNARA BAÑERA ANATOMICA 1.7X0.8X0.40 ACRILICO BCA"  |  702 |   21 |   5907.55 |
+	| ...     | ...													  |  ... |  ... |       ... |
+	| 7095044 | "BAGNARA BAÑERA ANATOMICA 1.4X0.7X0.37 ACRILICO BCA"  |  702 |   21 |    3782.4 |
+	+---------+-------------------------------------------------------+------+------+-----------+
+	14888 rows in set (0.13 sec)
+
+#	Hata ahora solamente montamos un Datawerehouse, todavia no empezamos a jugar con nuestros datos. Pero, es fundamental que este paso este bien hecho
+#	ya que si los datos no estan bien almacenados van a terminar causandono horrores a la hora de hacer el analisis exaustivo. Como pudimos ver en este LAB,
+#	MariaDB tiene muchas tecnologias (en sentido de Storages Engines) y no es que uno sea mejor que el otro, ese pensamiento es MUY erroneo, y limitarse a pensar
+#	Que MariaDB es INNODB y solamente eso nos hace no explotar el motor de MariaDB al 100%. Asi como un mecanico tiene su caja de herramientas y cada 
+#	herramienta tiene un fin especifico y de acuerdo a lo que quiera hacer, el problema que quiera resolver, sera la herramienta que use; de igual manera,
+#	de acuerdo a el tipo de almacenamiento que necesitemos para nuestro analisis, app, lugar de almacenamiento, etc, sera el Storage Engine. En este caso
+#	Utilizamos ColumnStore porque nuestra solucion asi lo requeria, ya que basicamente necesitabamos montar un Datawerehouse.
+#	
+#	Espero haber aportado algo a tus conocimientos y que te haya re servido este "tutorial".
+#	Saludos!
+
+# Links que te van a salvar las Papas:
+#	- https://jira.mariadb.org/secure/attachment/42065/MariaDBColumnstoreQuickStartGuide.pdf
+
