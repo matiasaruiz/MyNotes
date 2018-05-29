@@ -2,21 +2,82 @@
 #
 # Lo primero que debemos preguntarnos a la hora de migrar es: Se esta utilizando MyISAM como una opcion o porque es el motor por defecto?
 # Si bien pasa que MyISAM, en ocaciones, es usado como motor por defecto, tambien ocurre que MyISAM fue una eleccion. Es por eso que a la hora
-# de presentar una actualizacion a InnoDB, el motivo  de la migracion debe estar bien justificado.
+# de presentar una migracion a InnoDB, el motivo  de la migracion debe estar bien justificado.
 #
 # Algo importante a tener en cuenta, es que InnoDB es un motor de base de datos altamente transaccional, esto implica que el lenguage que entiende son
 # transacciones. El hecho de que sea transaccional, implica que permite la concurrencia de usuarios multiples; escrituras multiples en simultaneo. MyISAM
-# de su concepcion (el modelo ISAM creado por IBM), a la hora de hacer escrituras lo hace en forma secuencial y en paralelo crea una tabla con indices que
-# apuntan a los datos creados para tener un orden sobre ellos. Esto permite que las lecturas sean mucho mas rapidas en su tiempo de ejecucion. Pero, el
+# , desde su concepcion (el modelo ISAM creado por IBM), a la hora de hacer escrituras, lo hace en forma secuencial y en paralelo crea una tabla con indices 
+# que apuntan a los datos creados para tener un orden sobre ellos. Esto permite que las lecturas sean mucho mas rapidas en su tiempo de ejecucion. Pero, el
 # hecho de que MyISAM haga escritura secuencial, implica que los bloqueos sean a nivel tabla. No asi, InnoDB que bloquea a nivel fila. Como podemos ver,
-# ambos apuntan a objetivos distintos. Innodb apunta a las rapidas escrituras, mientras que MyISAM apunta a las rapidas lecturas. Es por eso que no hay
-# que tomar a la ligera esta migracion y analizar todos los puntos, no solo en lo que a base de datos respecta sino tambien en lo que a la aplicacion
-# respecta. Porque podria darse el caso que estamos buscando performance en nuestras consultas, y la base de datos no se carga con datos con frecuencia
-# y recurrencia; en este caso nos convendria usar una base datos menos transaccional pero mas del estilo de MyISAM. No asi, el caso contrario. Nuestra 
-# aplicacion se encuentra constantemente pegandole a la base de datos con insercions o transacciones; en este ultimo caso, ovbiamente nos es mas favorable
-# tener un motor mas transaccional del estilo de InnoDB. En conclucion a esto, lo primero en a preguntarse no es como migrar de MyISAM a InnoDB porque
-# es la moda y toda la marencoche, mas bien, es preguntarse si REALMENTE nescesito InnoDB y si mi aplicacion realmente es transaccional.
-
+# ambos apuntan a objetivos distintos. Innodb apunta a las rapidas escrituras y las transacciones, mientras que MyISAM apunta a las rapidas lecturas. 
+# Es por eso que no hay que tomar a la ligera esta migracion y analizar todos los puntos, no solo en lo que a base de datos respecta sino tambien en lo que 
+# a la aplicacion respecta. Porque podria darse el caso que estamos buscando performance en nuestras consultas, y la base de datos no sea carga con datos 
+# con frecuencia y/o recurrencia; en este caso nos convendria usar una base datos menos transaccional pero mas del estilo de MyISAM. No asi, el caso
+# contrario. Nuestra aplicacion se encuentra constantemente pegandole a la base de datos con insercions o transacciones; en este ultimo caso, ovbiamente nos 
+# es mas favorable tener un motor mas transaccional del estilo de InnoDB. En conclucion a esto, lo primero en a preguntarse no es como migrar de MyISAM a 
+# InnoDB porque es la moda y toda la marencoche, mas bien, es preguntarse si REALMENTE nescesito InnoDB y si mi aplicacion realmente es transaccional.
+# En este sentido, mi aplicacion debe saber lidiar con los bloqueos que puedan ocurrir con InnoDB, inclusio cuando no se estan usando transacciones.
+#
+#
+# Otro punto importante a tener en cuenta tambien, es la tan preciada Performance. El tema aca, (para InnoDB) es que la performance abarca todos los campos
+# tanto los positivos como negativos. Por un lado tenemos beneficios al usar InnoDB en: 
+#		- Agrupamientos de Claves Primarias
+#		- Datos en Cache
+#		- Concurrencia alta
+#		- Flujos de datos on the Background
+# Mientras que tambien se encuntran presentes las siguientes desventajas:
+#		- Las tablas (tablespaces) son muy grandes 
+#		- Las lecturas son mas lentas (ya que los datos se guardan en lugares aleatoreos en disco, a diferencia de MyISAM que las guarda en forma secuencial)
+#		- Los manejos de Blobs son mas lentos
+#		- Deadlocks a la hora de hacer inserts pueden ocurrir
+#		- Problemas al manejar gran cantidad de tablas
+#		- Las cargas de datos son Lentas, tambien los ALTERs y todo lo relacionado con modificar las tabals
+#
+# Las caracteristicas que posee MyISAM que hacen dificultosa la migracion son:
+#		- Busquedas en Textos
+#		- Indices RTREE
+#
+# Se pueden tener motores Mixtos de almacenamiento en la base de datos. No es recomendable, de hecho, no lo hagas. Complica no solo al Optimizer de MariaDB,
+# sino que complica el monitoreo, el balanceo de carga y las copias de seguridad.
+#
+# Otro punto a tener en cuenta es que la migracion no termina cuando se termino de convertir la tabla MyISAM a InnoDB. InnoDB de por si solo, no funciona
+# optimamnete, hay que configurarlo y configurar sus variables. MyISAM, en cambio, no nescesariamente. Hay servidores de produccion que usan MyISAM con sus
+# valores por defecto y funcionan de forman razonable. Es muy raro que configures MyISAM y, en general, como mucho se puede obtener hasta 2 y 3 puntos mas
+# de ganancia. Por el otro lado, si se lo configura bien, InnoDB puede obtener entre 10 y 50 puntos de ganancia. Pero, implica un arduo trabajo de 
+# configuracion el cual no hay una guia escrita, ya que cada sistema y cada server, en definitiva, cada entorno es totalmente distinto.
+#
+# En InnoDB, las tablas si o si deben tener claves primarias. Por ende, si mis tablas de MyISAM no tienen claves primarias al realizar la migracion, 
+# MariaDB creara un campo mas oculto INT de 6 bytes. No es muy recomendable dejar que MariaDB lidie con esto, mas bien, conviene buscar las tablas 
+# sin claves primarias y luego agregarles un campo que sea clave primaria.
+#
+# En InnoDB, tambien, los indices "provienen" o dependen de la clave principal. Entonces:
+#		- PRIMARY KEY (id)
+#		- INDEX (b) = INDEX (b, id)
+# Esto es importante a tener en cuenta ya que nos evitara mucho espacio en indices inescesarios, que no aportan mucho, ya que al estar ordenado por id 
+# el agregar b para crear el arbol de indidces no aporta mucho. De hecho se duplica el arbol agregando algo minimo. En base a esto, is importante que 
+# siempre que se pueda, se mantengan las claves primarias lo mas chicas posibles. En la misma linea, hay que tener en cuneta que las claves secundarias
+# incluyen a la clave primaria, por esto, las claves primarias no deberian ser muy largas ya que adosarlas a la secundaria implicaria una clave bastante
+# grande. Siempre y cuando no se superpongan las claves [EJ: PK(a,b,c) y SK(c,b,a)] esto sucedera. Otro aspecto de los insices es que en MyISAM los indices
+# se guardan en archivos separados, en cambio en InnoDB, los indices pertenece a los tablespaces, lo que hara que los querys con indices (basicamente todos)
+# sean un poquito mas rapido ya que no tiene que ir al archivo de indices y luego a los datos. Pero, por otra parte, cuando se hace una busqueda por una 
+# clave/indice secundaria, toma el btree de la pk y en medio del arbol construye otro arbol con la clave secundaria, lo que hace que las busquedas pro claves
+# secundarias sean mas engorrosas. En cuanto a indices, MyISAM hay posibilidad de crear llaves primarias compuestas, no asi en InnoDB. InnoDB no soporta 
+# PKs Compuestas. Para solucionar esto, lo mas facil es detectar aquellas tablas cuyas PK son compuestas y crear una PK simple o reducir la PK a una simple.
+#
+# Al margen de los indices, es importante tener en cuenta que MyISAM e InnoDB manejan de maneras muy distintas los recursos que poseen. De base las tablas
+# InnoDB ocupan mucho mas espacio en disco que las tablas MyISAM, entre 2 y 3 veces mas que las tablas MyISAM. De igual manera utilizan distintas cuotas de
+# Memoria; MyISAM con 10 MB de memoria (asignados para el) puede trabajar sin problemas. InnoDB, en cambio, necesita (si la memoria del server supera los
+# 4GB de ram) el 70% de la memoria funcionando para el. Ahora, ya que manejan de distintas formas los recursos, es importante tener en cuenta que cuando
+# coexistan ambos motores en el mismos server, la distribucion o asignancion de recursos no sera la misma y que ambos competiran por los recursos, por ende
+# los parametros anteriorers de memoria no funcionaran aqui. Cuando coexistan ambos motores, los joins entre ambos seran posibles pero tene en cuenta que
+# si se hace un ROLLBACK en una InnoDB que paralelamente se encontraba trabajando en una MyISAM, del lado InnoDB no se escribiran los datos pero del lado
+# MyISAM si, lo cual puede traer problemas de consistencia de datos.
+#
+# Otro aspecto a tner en cuenta es que todos los limites en en InnoDB y MyISAM son totalmente distintos, asique hay que tener cuidado con los limites.
+# De todos modos es dificil que se lleguen a los limites. Igual hay que tenerlo en cuenta, aca hay un link: http://mysql.rjweb.org/doc.php/limits
+# 
+# Por demas esta decir que MyISAM bloquea a nivel tabla debido a que no es transaccional. Y si bien InnoDB permite bloquear por tabla, naturalmente
+# bloquea a nivel fila.
 
 
 
