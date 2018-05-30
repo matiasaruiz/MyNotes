@@ -78,8 +78,30 @@
 # 
 # Por demas esta decir que MyISAM bloquea a nivel tabla debido a que no es transaccional. Y si bien InnoDB permite bloquear por tabla, naturalmente
 # bloquea a nivel fila.
-
-
+#
+# Otro punto a tener en cuenta es que en InnoDB las variables que corresponden a los FULL TEXT son disntintas. Para verlas: 
+#		SHOW VARIABLES LIKE '% ft%';
+# Siguiendo con los FULL TEXT, los ORDER BY se ordenan en forma distinta debido a que los valores de relevancia se calculan de forma distinta.
+# Cuando se indexa con un campo FULL TEXT puede que al migrar sea nescesario recosntruir los indices
+#
+#
+# Porque se prefiere migrar a InnoDB?
+# - Ante un Crash en MySQL/MariaDB, es automatica a diferencia de MyISAM que hay que hacer un REPAIR TABLE
+# - InnoDB es transaccional y se puede ajustar mejor a nuestra solucion o aplicacion
+# - El bloqueo es a nivel fila en vez de a nivel tabla, lo cual es mas eficiente
+# - MyISAM esta propenso a desaparecer en un futuro
+# - MyISAM no es comptible con soluciones de Alta Disponibilidad (como Galera)
+#
+# PERO, hay que tener en cuenta que InnoDB deja muy grandes marcas en los Discos
+#
+# Script de ALTER:
+#    SELECT  CONCAT('USE ', table_schema, ';  ALTER TABLE ', table_name, ' ENGINE=InnoDB;')
+#        FROM  information_schema.tables
+#        WHERE  engine = 'MyISAM'
+#          AND  table_schema NOT IN ('mysql', 'information_schema', 'performance_schema');
+#
+# En cuanto a los archivos de MyISAM si deseamos (deberiamos) podemos mover los archivos .frm, .MYD y .MYI, a otra parte de nuestro disco o mismo
+# a un disco externo a modo de BackUp. NO se puede hacer lo mismo con InnoDB, porque funciona de manera distinta. NI SE TE OCURRA HACER LO MISMO.
 
 
 
